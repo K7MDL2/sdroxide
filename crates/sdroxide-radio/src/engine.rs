@@ -13929,6 +13929,8 @@ impl Engine {
     /// Called on every source that reaches this engine — the one it started
     /// with, and every one a reconnect or an interface switch brings in — because
     /// a freshly opened device is on whatever port its driver defaults to.
+    /// Assert the RX preference even if the source's cached name matches: a
+    /// cached setting is not confirmation of the relay's position.
     ///
     /// A name the device does not list is skipped rather than attempted: after
     /// an interface switch the preference usually belongs to the *other* radio,
@@ -13942,9 +13944,7 @@ impl Engine {
         // a port some earlier run happened to record would put it back on an
         // empty connector at every start — see [`IqSource::owns_rx_antenna`].
         let want_rx = want_rx.filter(|_| !self.source.owns_rx_antenna());
-        if let Some(name) = want_rx.filter(|n| self.caps.antennas_rx.contains(n))
-            && self.state.antenna_rx != name
-        {
+        if let Some(name) = want_rx.filter(|n| self.caps.antennas_rx.contains(n)) {
             if let Err(e) = self.source.set_antenna(&name) {
                 warn!("restoring RX antenna {name}: {e}");
             }

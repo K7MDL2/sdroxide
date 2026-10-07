@@ -247,6 +247,39 @@ fn the_startup_antenna_is_selected_on_the_front_end() {
     let _ = thread.map(|t| t.join());
 }
 
+#[test]
+fn a_matching_cached_rx_antenna_is_asserted_at_startup_and_reopen() {
+    let before = Ports::fresh();
+    let after = Ports::fresh();
+    let handed = after.clone();
+    let reopen: sdroxide_radio::ReopenFn = Box::new(move |_| {
+        Ok((Box::new(Rig { ports: handed.clone() }) as Box<dyn IqSource>, caps()))
+    });
+    let mut h = start_engine(
+        Box::new(Rig { ports: before.clone() }),
+        caps(),
+        EngineConfig {
+            initial_antenna: (Some("LNAH".into()), None),
+            reopen: Some(reopen),
+            ..Default::default()
+        },
+    );
+    let thread = h.thread.take();
+    assert!(wait_for_state(&h.event_rx, |s| s.antenna_rx == "LNAH"));
+    assert_eq!(before.asked(), vec![(Direction::Rx, "LNAH".into())]);
+
+    h.swap_tx.send(sdroxide_radio::EngineSwap::ReopenSource).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while after.asked().is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(after.asked(), vec![(Direction::Rx, "LNAH".into())]);
+    assert_eq!(after.rx(), "LNAH");
+
+    drop(h);
+    thread.unwrap().join().unwrap();
+}
+
 /// A port the front end does not have is somebody else's radio — the preference
 /// outlived an interface switch. Asking for it would only make the driver log an
 /// error, so it is skipped and the device is left where it opened.

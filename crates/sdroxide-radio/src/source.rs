@@ -974,6 +974,8 @@ impl ConvertedSource {
     }
 
     /// A station with more than one box in front of it — see [`ConverterPlan`].
+    /// When the requested dial is known, use [`Self::with_plan_at_dial`] instead
+    /// of guessing which converter produced the hardware frequency.
     pub fn with_plan(inner: Box<dyn IqSource>, plan: ConverterPlan) -> Self {
         // Seeded by working *backwards* from where the front end already is.
         // Nothing has told us a dial yet, and the first thing the engine does
@@ -981,6 +983,20 @@ impl ConvertedSource {
         // I.F. has to say so, or the radio comes up on 28 MHz having been
         // opened for 144.
         let step = plan.step_from_hardware(inner.center_hz());
+        Self::with_step(inner, plan, step)
+    }
+
+    /// Use the requested dial to disambiguate converters sharing an I.F.
+    /// The reported centre still comes from the hardware that actually opened.
+    pub fn with_plan_at_dial(inner: Box<dyn IqSource>, plan: ConverterPlan, dial_hz: f64) -> Self {
+        let step = plan.step_for(dial_hz);
+        Self::with_step(inner, plan, step)
+    }
+
+    fn with_step(mut inner: Box<dyn IqSource>, plan: ConverterPlan, step: ConverterStep) -> Self {
+        // Opening does not retune, but accessory band decoders need the same
+        // on-air frequency they receive on every subsequent retune.
+        inner.set_dial_hz(inner.center_hz() - step.rx_offset_hz);
         ConvertedSource { inner, plan, step }
     }
 

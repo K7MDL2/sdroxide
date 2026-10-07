@@ -133,6 +133,10 @@ impl HpsdrSource {
             .map_err(anyhow::Error::msg)?;
         let rx = board.rx(cfg.ddc).map_err(|e| anyhow::Error::msg(e.to_string()))?;
         rx.set_rx_freq(sdroxide_types::HpsdrConfig::apply_ppm(center_hz, cfg.ppm));
+        // A shared connection can retain the previous DDC 0's accessory state.
+        // The converter wrapper and remembered ANT choice override these next.
+        rx.set_band_dial(None);
+        rx.set_io_rx_input(cfg.io_rx_input);
         let label = if cfg.ddc == 0 {
             format!("HPSDR {} @ {ip} ({:.3} Msps)", board.board(), board.sample_rate_hz() / 1e6)
         } else {
@@ -437,11 +441,11 @@ impl IqSource for HpsdrSource {
         else {
             return Ok(());
         };
-        if *current != input {
-            *current = input;
-            if let Some(rx) = self.rx.as_ref() {
-                rx.set_io_rx_input(input);
-            }
+        *current = input;
+        // The cached label is not relay readback, particularly when reopening
+        // a connection another DDC still holds. Assert every band recall.
+        if let Some(rx) = self.rx.as_ref() {
+            rx.set_io_rx_input(input);
         }
         Ok(())
     }

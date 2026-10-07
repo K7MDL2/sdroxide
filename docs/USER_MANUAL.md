@@ -8636,6 +8636,10 @@ going out.
   like any other receiving antenna — so a transverter band can listen on J9
   while HF stays on the radio's own jack. Left at *Radio's own input*, no ANT
   control is shown, because an HL2 that has never used J9 has nothing there.
+  A remembered ANT choice is reapplied to the relay at startup, on
+  *Apply / reconnect*, and on band recall, even if the displayed choice has
+  not changed. With a transverter selected, the IO board receives the on-air
+  dial frequency immediately; no band change is needed to initialize it.
 
 > **Help wanted — the HPSDR backend is not fully tested yet.** 
 > If you own an HPSDR board, you can help by running with diagnostic logging 
