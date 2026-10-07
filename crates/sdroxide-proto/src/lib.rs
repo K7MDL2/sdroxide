@@ -1516,7 +1516,9 @@ use sdroxide_types::{
 /// `DigiStatus` whole, so a v172 peer reads the extra byte as the start of the
 /// next field and fails to decode every config — the same break as v172's
 /// appended message buttons.
-pub const PROTO_VERSION: u16 = 173;
+/// v174: `TxState.external_ptt` reports the radio's local PTT independently
+/// of commanded PTT, so native and remote transmit indicators follow it.
+pub const PROTO_VERSION: u16 = 174;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -2025,6 +2027,18 @@ pub fn decode<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> Result<T, ProtoError> 
 mod tests {
     use super::*;
     use sdroxide_types::ImageSlotInfo;
+
+    #[test]
+    fn external_ptt_status_roundtrips_independently_of_commanded_ptt() {
+        let mut state = RadioState::default();
+        state.tx.external_ptt = true;
+        let message = ServerMsg::State(state);
+        let decoded: ServerMsg = decode(&encode(&message).unwrap()).unwrap();
+        assert_eq!(decoded, message);
+        let ServerMsg::State(state) = decoded else { panic!("expected radio state") };
+        assert!(state.tx.ptt_on());
+        assert!(!state.tx.ptt);
+    }
 
     #[test]
     fn roundtrip_client_and_server_msgs() {
