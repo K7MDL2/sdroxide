@@ -591,13 +591,13 @@ pub struct EngineConfig {
     /// Which radio is on FreeDV, shared like `tx_gate`. `None` (the default,
     /// and every single-radio start): this engine's own mode is the answer.
     pub rade_watch: Option<Arc<crate::RadeWatch>>,
-    /// The station's external T/R switch, shared like `tx_gate` — the relay
-    /// that grounds the SDR's antenna while anything in this process is on the
-    /// air. `None` (the default) switches nothing.
+    /// This radio's external T/R switch — the relay module that grounds its
+    /// SDR's antenna and switches its band filters while it transmits. `None`
+    /// (the default) switches nothing.
     ///
-    /// Shared rather than per-engine because the relay is in the antenna line,
-    /// not in a front end: whichever radio keys, the same contacts have to
-    /// throw, and they must not open while another one is still transmitting.
+    /// One per radio, never shared: a module belongs to exactly one radio and
+    /// follows only that radio's dials and key-downs (see
+    /// [`crate::tr_switch::RelayClaim`]).
     pub tr_switch: Option<Arc<crate::TrSwitch>>,
 }
 
@@ -2975,14 +2975,15 @@ struct Engine {
     /// connection transitions bypass the throttle, movement does not.
     rot_last_status: Option<sdroxide_rotator::RotStatus>,
     next_rot_emit: Instant,
-    /// The external T/R switch's config as persisted (`relay.json`), announced
-    /// in the station bundle the way the rotator's is.
+    /// This radio's T/R switch config as persisted (its scope's `relay.json`),
+    /// announced in the station bundle the way the rotator's is.
     relay_cfg: sdroxide_types::RelayConfig,
-    /// The switch itself, shared with every other engine. The driver behind it
-    /// is built by the primary engine only — one station, one antenna line —
-    /// but every engine publishes into it, because any of them keying is the
-    /// station being on the air.
+    /// This radio's own switch. Every radio has one; the module behind it is
+    /// this radio's alone (see `relay_claim`).
     tr_switch: Option<Arc<crate::TrSwitch>>,
+    /// This radio's hold on the module it drives, so no other radio can open
+    /// it. Released when replaced or when the engine goes away.
+    relay_claim: Option<crate::tr_switch::RelayClaim>,
     /// What was last told to the clients, so a status only goes out when it
     /// changed.
     relay_last_status: Option<sdroxide_types::RelayStatus>,
@@ -4209,6 +4210,7 @@ fn engine_thread(
         rot_cfg: sdroxide_types::RotatorConfig::default(),
         relay_cfg: sdroxide_types::RelayConfig::default(),
         tr_switch: engine_cfg.tr_switch.clone(),
+        relay_claim: None,
         relay_last_status: None,
         relay_pending: false,
         relay_lead_capped: false,
@@ -4317,12 +4319,9 @@ fn engine_thread(
     if engine.primary {
         engine.sync_rotator();
     }
-    engine.relay_cfg = sdroxide_config::load_relay_config();
-    // One station, one antenna line: only the primary engine opens the switch.
-    // Every engine still publishes into it — see `Engine::poll_tr_switch`.
-    if engine.primary {
-        engine.sync_relay();
-    }
+    engine.relay_cfg = engine.store.load_relay_config();
+    // Every radio opens its own switch, if it has one configured.
+    engine.sync_relay();
     // Seed clients with the whole station configuration up front, for the same
     // reason as the operator config above: a settings dialog that has not been
     // told what the station is set to would show defaults, and applying those
@@ -9605,21 +9604,12 @@ impl Engine {
                 return;
             }
             SetRelayConfig(cfg) => {
-                if let Err(e) = sdroxide_config::save_relay_config(&cfg) {
+                if let Err(e) = self.store.save_relay_config(&cfg) {
                     warn!("saving T/R switch config: {e}");
                 }
                 self.relay_cfg = *cfg;
-                // Whichever engine is told opens the hardware and becomes the
-                // switch's owner — *not* only the primary one.
-                //
-                // The primary opens it at startup because somebody has to and
-                // one of them has to be chosen. But a remote client is attached
-                // to one radio's session, so its `SetRelayConfig` reaches that
-                // radio and no other: gating this on `primary` would mean an
-                // operator who set the switch up from their second radio's tab
-                // saved a configuration that never opened anything. The hub
-                // holds a single driver either way, and `sync_relay` closes the
-                // old one before opening the new.
+                // This radio's own module: the configuration is saved in its
+                // scope and opened on its switch, whichever radio is primary.
                 self.sync_relay();
                 self.emit_station_config();
                 return;
@@ -12187,26 +12177,50 @@ impl Engine {
         }
         self.relay_pending = false;
         self.relay_last_status = None;
+        // The sense line is wired to this radio's transceiver: the module is
+        // this radio's, so whatever tab number a configuration carried over
+        // from the shared-switch days says, the edge is this engine's.
+        let mut cfg = self.relay_cfg.clone();
+        cfg.sense.radio = self.instance;
         // Close the old one *first*. Its thread owns a serial port or a device
         // node, and the new configuration is very often the same one with a
         // number changed — so opening before closing would have this engine
         // race itself for its own hardware. Also the moment the contacts are
         // put back to receive, which is why this is refused while on the air.
-        hub.install(None, &self.relay_cfg);
-        match sdroxide_relay::open(&self.relay_cfg) {
+        hub.install(None, &cfg);
+        self.relay_claim = None;
+        if cfg.enabled() {
+            match crate::tr_switch::RelayClaim::take(&cfg, self.instance) {
+                Ok(claim) => self.relay_claim = Some(claim),
+                Err(owner) => {
+                    let why = format!(
+                        "this relay module is already assigned to another radio (radio id \
+                         {owner}); a module can belong to only one radio"
+                    );
+                    warn!("T/R switch: {why}");
+                    hub.set_open_error(Some(why));
+                    self.emit_relay_status();
+                    return;
+                }
+            }
+        }
+        match sdroxide_relay::open(&cfg) {
             Ok(handle) => {
                 if let Some(h) = handle.as_ref() {
-                    info!("T/R switch: {}. {}", h.describe(), self.relay_cfg.sequence_note());
+                    info!("T/R switch: {}. {}", h.describe(), cfg.sequence_note());
                 }
                 hub.set_open_error(None);
-                hub.install(handle, &self.relay_cfg);
+                hub.install(handle, &cfg);
             }
             Err(e) => {
                 warn!("T/R switch: {e}");
-                hub.install(None, &self.relay_cfg);
+                hub.install(None, &cfg);
                 hub.set_open_error(Some(e.to_string()));
             }
         }
+        // The band decoder starts from this radio's current dials, not from
+        // whatever was told to the driver that was just closed.
+        self.relay_bands_told = None;
         self.emit_relay_status();
     }
 
@@ -12294,19 +12308,16 @@ impl Engine {
             self.sync_relay();
         }
 
-        if self.primary {
-            let st = hub.status();
-            if self.relay_last_status.as_ref() != Some(&st) {
-                self.relay_last_status = Some(st.clone());
-                let _ = self.event_tx.send(RadioEvent::RelayStatus(Box::new(st)));
-            }
+        let st = hub.status();
+        if self.relay_last_status.as_ref() != Some(&st) {
+            self.relay_last_status = Some(st.clone());
+            let _ = self.event_tx.send(RadioEvent::RelayStatus(Box::new(st)));
         }
     }
 
-    /// Tell the T/R switch's band decoder (issue #442) which bands this
-    /// radio's dials are in: every engine its transmit band, since whichever
-    /// radio keys brings its own; the primary its receive band too, since the
-    /// bank belongs to the station and not to any one receiver.
+    /// Tell this radio's T/R switch band decoder (issue #442) which bands its
+    /// dials are in. The module is this radio's alone, so both words follow
+    /// this radio: its receive dial between overs, its transmit dial during.
     ///
     /// Bands only. Which word a contact follows, and when it swaps its RX
     /// word for its TX word, is the relay worker's decision, made from the
@@ -12322,7 +12333,7 @@ impl Engine {
         }
         let rx = sdroxide_types::Band::containing(rx_hz);
         let tx = sdroxide_types::Band::containing(tx_hz);
-        if self.primary && told.map(|t| t.2) != Some(rx) {
+        if told.map(|t| t.2) != Some(rx) {
             hub.set_rx_band(rx);
         }
         if told.map(|t| t.3) != Some(tx) {

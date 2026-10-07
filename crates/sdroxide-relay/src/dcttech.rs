@@ -87,7 +87,14 @@ impl RelayTransport for DcttechTransport {
             tracing::debug!("the relay board's read-back did not look like one: {body:02x?}");
             return Ok(None);
         }
-        Ok(Some(ChannelMask::from(state) & self.managed))
+        let actual = ChannelMask::from(state) & self.managed;
+        // The board disagrees with what was written, so the cache in `apply`
+        // is wrong too; without forgetting it, the driver's rewrite would be
+        // skipped as "unchanged".
+        if self.last.is_some_and(|had| had != actual) {
+            self.last = None;
+        }
+        Ok(Some(actual))
     }
 
     fn round_trip(&self) -> Duration {
@@ -198,6 +205,32 @@ mod tests {
     fn a_read_back_yields_the_contacts_the_board_reports() {
         let (mut t, _) = transport(vec![b'A', b'B', b'C', b'D', b'E', 0, 0, 0b11]);
         assert_eq!(t.read_back().unwrap(), Some(0b11));
+    }
+
+    #[test]
+    fn a_disagreeing_read_back_makes_the_next_apply_rewrite_the_contacts() {
+        let (mut t, sent) = transport(vec![b'A', b'B', b'C', b'D', b'E', 0, 0, 0b00]);
+        t.apply(0b01).unwrap();
+        sent.lock().unwrap().clear();
+
+        assert_eq!(t.read_back().unwrap(), Some(0b00));
+        t.apply(0b01).unwrap();
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec![dcttech::set(1, true).to_vec(), dcttech::set(2, false).to_vec()],
+            "a board that lost a write must be told again"
+        );
+    }
+
+    #[test]
+    fn an_agreeing_read_back_keeps_writes_minimal() {
+        let (mut t, sent) = transport(vec![b'A', b'B', b'C', b'D', b'E', 0, 0, 0b01]);
+        t.apply(0b01).unwrap();
+        sent.lock().unwrap().clear();
+
+        assert_eq!(t.read_back().unwrap(), Some(0b01));
+        t.apply(0b01).unwrap();
+        assert!(sent.lock().unwrap().is_empty());
     }
 
     /// The defence against the one byte the HID layer cannot be tested on.

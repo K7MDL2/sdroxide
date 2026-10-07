@@ -601,7 +601,7 @@ pub fn config_dir() -> Result<PathBuf, ConfigError> {
 ///
 /// Only the files that describe *a radio* are scoped: `radio.json`,
 /// `session.json`, `scanner.json`, `modeprofiles.json`, `tciserver.json`, `rigctld.json`,
-/// `wsjtx.json`. Everything the operator shares across radios — memories,
+/// `wsjtx.json`, `relay.json`. Everything the operator shares across radios — memories,
 /// band stacks, the logbook, `config.toml` — stays on the root free functions.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Store {
@@ -805,6 +805,20 @@ impl Store {
         cfg: &sdroxide_types::RigctldConfig,
     ) -> Result<(), ConfigError> {
         self.save("rigctld.json", cfg)
+    }
+
+    /// This radio's external transmit/receive switch — the relay module that
+    /// grounds its SDR's antenna and switches its band filters. Per radio: each
+    /// module belongs to exactly one radio and follows only that radio's dials
+    /// and key-downs. Radio 0's is the legacy root `relay.json`, so a station
+    /// configured before switches were per radio keeps its module on its first
+    /// radio.
+    pub fn load_relay_config(&self) -> sdroxide_types::RelayConfig {
+        self.load("relay.json")
+    }
+
+    pub fn save_relay_config(&self, cfg: &sdroxide_types::RelayConfig) -> Result<(), ConfigError> {
+        self.save("relay.json", cfg)
     }
 
     pub fn load_wsjtx_config(&self) -> sdroxide_types::WsjtxConfig {
@@ -1822,19 +1836,6 @@ pub fn load_rotator_config() -> sdroxide_types::RotatorConfig {
 
 pub fn save_rotator_config(cfg: &sdroxide_types::RotatorConfig) -> Result<(), ConfigError> {
     save_json("rotator.json", cfg)
-}
-
-/// The external transmit/receive switch — the relay board or contact closure
-/// that grounds the SDR's antenna while the station transmits. Owned by the
-/// engine, like the rotator above, and for the same reason: it is a fact about
-/// the machine the antenna is attached to, not about the screen in front of the
-/// operator.
-pub fn load_relay_config() -> sdroxide_types::RelayConfig {
-    load_json("relay.json")
-}
-
-pub fn save_relay_config(cfg: &sdroxide_types::RelayConfig) -> Result<(), ConfigError> {
-    save_json("relay.json", cfg)
 }
 
 // ── Broadcast station schedules ──────────────────────────────────────────────
