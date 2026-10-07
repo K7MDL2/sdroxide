@@ -12,6 +12,9 @@
 //! stack. Other people's home-made keyboards, LED controllers and thermometers
 //! share it. So the product string is checked as well, and it is the only thing
 //! that makes the enumeration safe to run on a stranger's bus.
+//!
+//! Noyito modules use the separate `5131:2007` id and are also offered without
+//! requiring the V-USB family's product string.
 
 use std::time::Duration;
 
@@ -35,7 +38,7 @@ impl DcttechTransport {
         if managed & !0xFF != 0 {
             return Err(Error::Config("a dcttech relay board has at most eight contacts".into()));
         }
-        let name = hid::enumerate(&[dcttech::USB_ID])
+        let name = hid::enumerate(dcttech::USB_IDS)
             .into_iter()
             .find(|e| e.key == key)
             .map(|e| e.name)
@@ -114,36 +117,82 @@ impl RelayTransport for DcttechTransport {
 
 /// The relay boards on this machine.
 ///
-/// Filtered on the product string as well as the ids, for the reason the module
-/// docs give: the vendor id is shared with every other V-USB hobby device, and
-/// offering somebody's home-made keyboard as an antenna relay would be a poor
-/// joke.
+/// The V-USB id also requires a relay product string, for the reason the module
+/// docs give: it is shared with other hobby devices. Noyito modules are matched
+/// by their separate id.
 pub fn list() -> Vec<RelayDevice> {
-    hid::enumerate(&[dcttech::USB_ID])
+    hid::enumerate(dcttech::USB_IDS).into_iter().filter_map(relay_device).collect()
+}
+
+fn relay_device(e: hid::HidEntry) -> Option<RelayDevice> {
+    match (e.vendor, e.product) {
+        dcttech::USB_ID if e.name.contains(dcttech::PRODUCT_PREFIX) => {}
+        dcttech::NOYITO_USB_ID => {}
+        _ => return None,
+    }
+    // Zero means unknown: do not infer a board width from its USB id.
+    let channels = [dcttech::PRODUCT_PREFIX, dcttech::NOYITO_PRODUCT_PREFIX]
         .into_iter()
-        .filter(|e| e.name.contains(dcttech::PRODUCT_PREFIX))
-        .map(|e| {
-            // "USBRelay2" — the trailing digit is how many contacts it has, and
-            // the only place the board says so.
-            let channels = e
-                .name
-                .rsplit_once(dcttech::PRODUCT_PREFIX)
-                .and_then(|(_, n)| n.trim().parse::<u8>().ok())
-                .unwrap_or(0);
-            RelayDevice {
-                label: if e.name.is_empty() { e.key.clone() } else { e.name.clone() },
-                key: e.key,
-                link: RelayLink::Hid,
-                channels,
-            }
+        .find_map(|prefix| {
+            e.name.rsplit_once(prefix).and_then(|(_, n)| n.trim().parse::<u8>().ok())
         })
-        .collect()
+        .unwrap_or(0);
+    Some(RelayDevice {
+        label: if e.name.is_empty() { e.key.clone() } else { e.name },
+        key: e.key,
+        link: RelayLink::Hid,
+        channels,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    fn entry(id: (u16, u16), name: &str) -> hid::HidEntry {
+        hid::HidEntry {
+            key: "/dev/hidraw3".into(),
+            vendor: id.0,
+            product: id.1,
+            name: name.into(),
+            serial: String::new(),
+        }
+    }
+
+    #[test]
+    fn discovery_offers_both_relay_ids_together() {
+        let devices: Vec<_> = [
+            entry(dcttech::USB_ID, "www.dcttech.com USBRelay8"),
+            entry(dcttech::NOYITO_USB_ID, "HIDRelay2"),
+        ]
+        .into_iter()
+        .filter(|e| dcttech::USB_IDS.contains(&(e.vendor, e.product)))
+        .filter_map(relay_device)
+        .collect();
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].channels, 8);
+        assert_eq!(devices[1].channels, 2);
+        assert!(devices.iter().all(|d| d.link == RelayLink::Hid));
+    }
+
+    #[test]
+    fn the_shared_hobby_id_still_requires_a_relay_product_string() {
+        assert!(relay_device(entry(dcttech::USB_ID, "Hobby keyboard")).is_none());
+        assert!(relay_device(entry(dcttech::USB_ID, "")).is_none());
+        assert!(relay_device(entry((0x046d, 0x406d), "USBRelay8")).is_none());
+    }
+
+    #[test]
+    fn noyito_discovery_does_not_require_a_product_string_or_guess_a_width() {
+        for name in ["", "Noyito HID relay module"] {
+            let device = relay_device(entry(dcttech::NOYITO_USB_ID, name)).unwrap();
+            assert_eq!(device.key, "/dev/hidraw3");
+            assert_eq!(device.channels, 0);
+            assert_eq!(device.label, if name.is_empty() { "/dev/hidraw3" } else { name });
+        }
+        assert_eq!(relay_device(entry(dcttech::NOYITO_USB_ID, "USBRelay8")).unwrap().channels, 8);
+    }
 
     /// A board that records what it was told and answers as the real one does.
     #[derive(Default)]

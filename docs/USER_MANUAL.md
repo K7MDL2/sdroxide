@@ -12669,6 +12669,12 @@ J16 open-collector outputs; see [6.2.3](#623-hpsdr-network-radios).
   replug. `cargo run -p sdroxide-relay --example relay -- --list --all` prints
   every HID device the machine can see, which separates "not permitted" from
   "not recognised".
+  Discovery includes both standard `USBRelay` boards (`16c0:05df`) and Noyito
+  modules (`5131:2007`); the latter do not need a `USBRelay` product string.
+  Noyito switching and read-back still need hardware verification.
+  The permission rule must cover the HID node, not just the USB bus node.
+  Linux `/dev/hidraw*` numbers can change after reconnecting or rebooting:
+  reselect the relay rather than retaining a path now assigned to another device.
 - **A CM108 card that is listed and does nothing.** Several clones carry a
   genuine C-Media id and ignore the GPIO report entirely. Nothing but listening
   for the click tells them apart.
