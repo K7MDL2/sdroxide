@@ -2879,6 +2879,7 @@ struct Engine {
     /// audio, so the DDC/demod/skimmer path is bypassed for a narrow
     /// audio-band panadapter mapped to RF.
     audio_mode: bool,
+    receive_mode_seen: Option<Mode>,
     /// Sound-card sample rate feeding `analyzer` in audio mode.
     radio_fs: f64,
     /// Front-end decimation, when the operator has asked for any: the raw IQ
@@ -3623,7 +3624,10 @@ fn engine_thread(
     // Whether this machine has an nrsc5 to decode HD Radio with. Asked here, on
     // the machine the decoder would run on, so a remote client greys the mode
     // out for the station's reason rather than its own.
-    state.hd_radio_unavailable = sdroxide_nrsc5::unavailable_reason().map(str::to_string);
+    state.hd_radio_unavailable = source
+        .mode_unavailable(Mode::HdRadio)
+        .or_else(sdroxide_nrsc5::unavailable_reason)
+        .map(str::to_string);
     // Seeded here, next to the other config-derived state, so the very first
     // broadcast carries the real guard settings and no client ever renders the
     // 0.0 that `TxState::default()` would give it.
@@ -4180,6 +4184,7 @@ fn engine_thread(
         tci_tx_drain: false,
         tci_last_snap: None,
         audio_mode,
+        receive_mode_seen: None,
         radio_fs,
         decim,
         audio_bw,
@@ -4371,6 +4376,7 @@ fn engine_thread(
         engine.vfo_memory[idle].antenna_rx = rx;
         engine.vfo_memory[idle].antenna_tx = tx;
     }
+    engine.refresh_receive_path();
     engine.push_rx_mode();
     engine.keep_vfo_in_span();
     engine.update_tuning();
@@ -4492,6 +4498,7 @@ fn engine_thread(
         // answers once its control link has been open a round trip.
         engine.refresh_antennas();
         engine.refresh_rx_antenna();
+        engine.refresh_receive_path();
 
         // Drive the FT8/FT4 slot machine (runs in both RX and TX). Returns
         // owned actions to avoid borrowing `engine.digi` and `engine` at once.
@@ -12912,6 +12919,17 @@ impl Engine {
     }
 
     fn set_rx_mode(&mut self, rx: RxId, mode: Mode) {
+        if let Some(why) = self.source.mode_unavailable(mode) {
+            self.notice(why);
+            return;
+        }
+        if rx == RxId::Main
+            && let Err(e) = self.prepare_receive_path(mode)
+        {
+            warn!("changing receive path: {e}");
+            self.notice(&format!("Could not change receive path: {e}"));
+            return;
+        }
         // APRS is a channel, not a band, and which channel is a property of
         // the operator's region: 144.800 in Region 1, 144.390 in the Americas,
         // 145.175 in Australia and New Zealand. A receiver anywhere else is
@@ -14677,25 +14695,80 @@ impl Engine {
         if factor == self.state.decimation {
             return;
         }
+        self.rebuild_receive_path(factor);
+        info!(factor, rate = self.state.sample_rate, "front-end decimation");
+        self.save_session();
+    }
+
+    fn refresh_receive_path(&mut self) {
+        let hd_unavailable =
+            self.source.mode_unavailable(Mode::HdRadio).or_else(sdroxide_nrsc5::unavailable_reason);
+        if self.state.hd_radio_unavailable.as_deref() != hd_unavailable {
+            self.state.hd_radio_unavailable = hd_unavailable.map(str::to_string);
+            self.emit_state();
+        }
+        let mode = self.state.rx[0].mode;
+        if self.receive_mode_seen == Some(mode) {
+            return;
+        }
+        self.receive_mode_seen = Some(mode);
+        if let Err(e) = self.prepare_receive_path(mode) {
+            warn!("restoring receive path: {e}");
+            self.notice(&format!("Could not restore receive path: {e}"));
+        }
+    }
+
+    fn prepare_receive_path(&mut self, mode: Mode) -> crate::Result<()> {
+        let Some(audio_mode) = self.source.prepare_receive_mode(mode)? else { return Ok(()) };
+        let rate = self.source.sample_rate();
+        if self.audio_mode == audio_mode && self.radio_fs == rate {
+            return Ok(());
+        }
+        self.audio_mode = audio_mode;
+        self.caps.audio_mode = audio_mode;
+        self.caps.label = self.source.describe();
+        self.radio_fs = rate;
+        self.audio_bw = self.source.display_bandwidth().unwrap_or(rate / 2.0);
+        self.center_trail.clear();
+        self.stream_center_hz = self.source.center_hz();
+        self.state.center_hz = self.stream_center_hz;
+        self.rebuild_receive_path(decimation_for(self.want_decimation, rate, audio_mode));
+        let _ = self.event_tx.send(RadioEvent::CapabilitiesUpdated(self.caps.clone()));
+        Ok(())
+    }
+
+    fn rebuild_receive_path(&mut self, factor: u32) {
+        self.zoom = None;
+        self.main_play.clear();
+        self.main_play_r.clear();
+        self.audio_re.clear();
+        self.audio_play.clear();
         self.state.decimation = factor;
         self.decim = (factor > 1).then(|| Decimator::new(factor));
         self.state.sample_rate = self.radio_fs / factor as f64;
 
         self.analyzer = build_analyzer(
             self.cfg.fft_size as usize,
-            self.state.sample_rate,
+            if self.audio_mode { self.radio_fs } else { self.state.sample_rate },
             self.cfg.avg_tc,
             f64::from(self.cfg.rows()),
             self.analyzer_view_span(),
         );
         if self.mixer.is_some() {
-            self.main = Some(RxChain::new(
-                self.state.sample_rate,
-                &self.state.rx[0],
-                self.audio_out_rate,
-                self.state.rx_freq_hz(),
-            ));
-            self.sub = self.state.sub_rx_enabled.then(|| {
+            self.main = (!self.audio_mode).then(|| {
+                RxChain::new(
+                    self.state.sample_rate,
+                    &self.state.rx[0],
+                    self.audio_out_rate,
+                    self.state.rx_freq_hz(),
+                )
+            });
+            self.audio_resampler = if self.audio_mode {
+                MonoResampler::new(self.radio_fs, self.audio_out_rate)
+            } else {
+                None
+            };
+            self.sub = (self.state.sub_rx_enabled && !self.audio_mode).then(|| {
                 RxChain::new(
                     self.state.sample_rate,
                     &self.state.rx[1],
@@ -14755,7 +14828,6 @@ impl Engine {
         self.sync_qo100();
         self.sync_audio_tap();
         self.sync_tci_iq();
-        info!(factor, rate = self.state.sample_rate, "front-end decimation");
 
         // A narrower span may not reach where the sub receiver was parked, and
         // a zero-IF front end's LO offset shrinks with the span (see
@@ -14765,7 +14837,6 @@ impl Engine {
         self.keep_vfo_in_span();
         self.update_tuning();
         self.emit_state();
-        self.save_session();
     }
 
     /// Rebuild the IQ front-end at runtime (backend / CAT audio / HPSDR-TCI
@@ -14941,10 +15012,16 @@ impl Engine {
             let _ = self.source.tx_end();
         }
         self.source = source;
+        self.receive_mode_seen = None;
         // The old front end's pipeline went with it.
         self.center_trail.clear();
         self.stream_center_hz = self.source.center_hz();
         self.caps = caps;
+        self.state.hd_radio_unavailable = self
+            .source
+            .mode_unavailable(Mode::HdRadio)
+            .or_else(sdroxide_nrsc5::unavailable_reason)
+            .map(str::to_string);
         self.caps.center_is_dial = self.source.center_is_dial();
         self.caps.cw_audio_keyed = self.source.cw_audio_keyed();
         self.caps.commands_squelch = self.source.commands_squelch();
@@ -15135,6 +15212,7 @@ impl Engine {
         self.broadcast_tci_state();
         // Same as a cold start: the fresh VFO sits on the new front end's LO,
         // which is where zero-IF hardware must not be tuned.
+        self.refresh_receive_path();
         self.push_rx_mode();
         self.keep_vfo_in_span();
         self.update_tuning();
