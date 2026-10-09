@@ -9944,6 +9944,22 @@ Select`), which decides who does the demodulating:
   ±12 kHz is genuinely usable is not documented by Icom and has not been
   measured here, so treat the width as approximate.
 
+The choice is remembered separately for each configured radio. With **12 kHz
+IF** selected, choosing a mode whose default passband extends beyond the IF's
+roughly ±12 kHz window (for example **WFM**) temporarily switches the LAN output
+to **AF**. Returning to a compatible mode restores **IF**, including its spectrum
+orientation. This does not overwrite the saved **Receive from** preference.
+If the preference is **AF**, mode changes leave it on AF.
+
+**HD Radio** is greyed out on Icom LAN connections: neither the narrow IF nor
+demodulated AF supplies the wideband I/Q needed to decode its digital sidebands.
+The radio's wide scope picture cannot substitute for those samples.
+An attached panadapter receiver is an exception: HD Radio is available when
+that receiver supplies sufficient I/Q bandwidth (400 kHz for FM HD, 30 kHz
+for AM HD) and the station has the decoder library. The Icom's own IF limit
+does not restrict the attached receiver. Mode-dependent AF/IF switching still
+applies to the Icom, without changing the panadapter's receive stream.
+
 Transmit is unaffected by the choice: it is always audio the radio modulates.
 
 ##### IF spectrum: which way round the IF runs

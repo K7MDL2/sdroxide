@@ -8348,6 +8348,14 @@ mod tests {
         assert_eq!(state.mode_unavailable(Mode::Wfm), None);
         let picked = click_in_band_mode_menu(&state, "HD RADIO");
         assert!(picked.is_empty(), "a greyed-out chip asked for {picked:?}");
+
+        state.hd_radio_unavailable =
+            Some("Icom LAN provides only AF or a 12 kHz IF; HD Radio requires wideband I/Q".into());
+        assert!(click_in_band_mode_menu(&state, "HD RADIO").is_empty());
+        assert!(
+            click_in_band_mode_menu(&state, "WFM")
+                .contains(&Command::SetMode { rx: RxId::Main, mode: Mode::Wfm })
+        );
     }
 
     /// Open the band/mode menu on a `screen`-sized viewport and measure the
