@@ -1518,7 +1518,9 @@ use sdroxide_types::{
 /// appended message buttons.
 /// v174: `TxState.external_ptt` reports the radio's local PTT independently
 /// of commanded PTT, so native and remote transmit indicators follow it.
-pub const PROTO_VERSION: u16 = 174;
+/// v175: per-band transmit settings (issue #444). `TxState.onboard_pa`
+/// publishes the HL2 PA control and `Command::SetOnboardPa` is appended.
+pub const PROTO_VERSION: u16 = 175;
 const VERSION_BYTE: u8 = 0x12;
 
 #[derive(Debug, thiserror::Error)]
@@ -2038,6 +2040,18 @@ mod tests {
         let ServerMsg::State(state) = decoded else { panic!("expected radio state") };
         assert!(state.tx.ptt_on());
         assert!(!state.tx.ptt);
+    }
+
+    #[test]
+    fn onboard_pa_command_and_status_roundtrip() {
+        for enabled in [false, true] {
+            let command = ClientMsg::Command(Command::SetOnboardPa(enabled));
+            assert_eq!(decode::<ClientMsg>(&encode(&command).unwrap()).unwrap(), command);
+            let mut state = RadioState::default();
+            state.tx.onboard_pa = Some(enabled);
+            let message = ServerMsg::State(state);
+            assert_eq!(decode::<ServerMsg>(&encode(&message).unwrap()).unwrap(), message);
+        }
     }
 
     #[test]

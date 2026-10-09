@@ -187,6 +187,10 @@ pub(crate) struct IoBoard {
 }
 
 impl IoBoard {
+    pub(crate) fn is_present(&self) -> bool {
+        self.presence == Presence::Present
+    }
+
     pub(crate) fn new(rx_input: HpsdrIoRxInput) -> IoBoard {
         IoBoard {
             presence: Presence::Probing(PROBE_TRIES),

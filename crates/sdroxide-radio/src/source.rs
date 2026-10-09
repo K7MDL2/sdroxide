@@ -391,6 +391,13 @@ pub trait IqSource: Send {
     fn set_dial_hz(&mut self, _hz: f64) {}
     /// Set the TUNE drive as a `0..1` fraction (see [`Self::set_tx_drive`]).
     fn set_tune_drive(&mut self, _frac: f64) {}
+    /// The commanded onboard PA setting; `None` means unsupported.
+    fn onboard_pa(&self) -> Option<bool> {
+        None
+    }
+    fn set_onboard_pa(&mut self, _enabled: bool) -> Result<()> {
+        Err(crate::RadioError::Msg("This radio has no onboard PA control".into()))
+    }
     /// Whether [`Self::set_tx_drive`] actually commands the rig's output power
     /// (TCI). On such a rig the audio we send is just the modulating signal and
     /// must go out at full scale — the power level is the rig's job, and
@@ -1549,6 +1556,14 @@ impl IqSource for ConvertedSource {
 
     fn set_tune_drive(&mut self, frac: f64) {
         self.inner.set_tune_drive(frac);
+    }
+
+    fn onboard_pa(&self) -> Option<bool> {
+        self.inner.onboard_pa()
+    }
+
+    fn set_onboard_pa(&mut self, enabled: bool) -> Result<()> {
+        self.inner.set_onboard_pa(enabled)
     }
 
     fn commands_tx_power(&self) -> bool {

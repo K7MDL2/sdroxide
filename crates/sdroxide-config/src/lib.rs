@@ -1293,6 +1293,9 @@ pub struct Session {
     /// Absent in a session written before this existed.
     #[serde(default)]
     pub band_antenna: BandAntennas,
+    /// Operator levels and optional onboard-PA override, by transmit band.
+    #[serde(default)]
+    pub band_tx: BandTransmitSettings,
     /// The antenna sockets each VFO was left on, `[A, B]`, as `(RX, TX)`.
     ///
     /// The companion to [`Self::vfo_modes`], and there for the same reason: a
@@ -1314,6 +1317,18 @@ pub struct Session {
 /// direction has no port to choose.
 pub type BandAntennas =
     std::collections::HashMap<sdroxide_types::Band, (Option<String>, Option<String>)>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct BandTransmit {
+    #[serde(default)]
+    pub drive: Option<f32>,
+    #[serde(default)]
+    pub tune_drive: Option<f32>,
+    #[serde(default)]
+    pub onboard_pa: Option<bool>,
+}
+
+pub type BandTransmitSettings = std::collections::HashMap<sdroxide_types::Band, BandTransmit>;
 
 impl Default for Session {
     fn default() -> Self {
@@ -1355,6 +1370,7 @@ impl Default for Session {
             tx_gains: Vec::new(),
             recording_mono: radio.recording_mono,
             band_antenna: BandAntennas::new(),
+            band_tx: BandTransmitSettings::new(),
             // And no socket of its own for either VFO until one has been
             // chosen on it — nothing moves a relay before the operator has
             // said what belongs where.
@@ -2315,6 +2331,10 @@ mod tests {
                 (sdroxide_types::Band::M40, (Some("ANT1".into()), None)),
                 (sdroxide_types::Band::M2, (Some("ANT2".into()), Some("ANT2".into()))),
             ]),
+            band_tx: BandTransmitSettings::from([(
+                sdroxide_types::Band::M6,
+                BandTransmit { drive: Some(0.02), tune_drive: Some(0.01), onboard_pa: Some(false) },
+            )]),
             // Both VFOs on 40 m, one on each socket — what the band map above
             // cannot express on its own.
             vfo_antennas: Some([

@@ -690,6 +690,14 @@ impl IqSource for PanadapterSource {
         self.ctrl.set_tune_drive(frac);
     }
 
+    fn onboard_pa(&self) -> Option<bool> {
+        self.ctrl.onboard_pa()
+    }
+
+    fn set_onboard_pa(&mut self, enabled: bool) -> Result<()> {
+        self.ctrl.set_onboard_pa(enabled)
+    }
+
     fn commands_tx_power(&self) -> bool {
         self.ctrl.commands_tx_power()
     }

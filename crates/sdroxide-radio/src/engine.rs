@@ -3034,6 +3034,9 @@ struct Engine {
     /// [`sdroxide_config::Session::band_antenna`] and
     /// [`Engine::follow_band_antenna`].
     band_antenna: sdroxide_config::BandAntennas,
+    band_tx: sdroxide_config::BandTransmitSettings,
+    tx_band_seen: Option<Band>,
+    onboard_pa_default: Option<bool>,
     /// The front-end gain stages the operator has set, RX then TX, as
     /// `(element, dB)` — held for the same reason [`Self::want_antenna`] is,
     /// and applied by [`Engine::restore_gains`] after every open.
@@ -3965,6 +3968,21 @@ fn engine_thread(
     let want_gains =
         session.as_ref().map(|s| (s.gains.clone(), s.tx_gains.clone())).unwrap_or_default();
     let band_antenna = session.as_ref().map(|s| s.band_antenna.clone()).unwrap_or_default();
+    let mut band_tx = session.as_ref().map(|s| s.band_tx.clone()).unwrap_or_default();
+    // Preserve the last operating band's levels when upgrading an old session.
+    if band_tx.is_empty()
+        && let Some(s) = session.as_ref()
+    {
+        band_tx.insert(
+            Band::containing(state.tx_freq_hz()),
+            sdroxide_config::BandTransmit {
+                drive: Some(s.drive),
+                tune_drive: Some(s.tune_drive),
+                onboard_pa: None,
+            },
+        );
+    }
+    let onboard_pa_default = source.onboard_pa();
     // Taken before the state is moved into the engine. Both VFOs open on the
     // mode the receiver came up in — the command line's, the session's, or the
     // default — and the *inactive* one is then given back the mode it was
@@ -4224,6 +4242,9 @@ fn engine_thread(
         session,
         want_antenna,
         band_antenna,
+        band_tx,
+        tx_band_seen: None,
+        onboard_pa_default,
         want_gains,
         want_decimation,
         store: engine_cfg.store,
@@ -4242,6 +4263,7 @@ fn engine_thread(
     // the same path a reconnect uses, so both land on the same port.
     engine.restore_antennas();
     engine.restore_gains();
+    engine.push_tx_freq();
     // The opening state goes out here rather than with the capabilities above,
     // so the first thing every UI sees is the port the radio is actually on.
     let _ = engine.event_tx.send(RadioEvent::State(engine.state.clone()));
@@ -5906,6 +5928,8 @@ impl Engine {
                 let frac = frac.clamp(0.0, 1.0);
                 if self.state.tx.drive != frac {
                     self.state.tx.drive = frac;
+                    self.band_tx.entry(Band::containing(self.tx_target_hz())).or_default().drive =
+                        Some(frac);
                     let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
                 }
             }
@@ -5913,6 +5937,10 @@ impl Engine {
                 let frac = frac.clamp(0.0, 1.0);
                 if self.state.tx.tune_drive != frac {
                     self.state.tx.tune_drive = frac;
+                    self.band_tx
+                        .entry(Band::containing(self.tx_target_hz()))
+                        .or_default()
+                        .tune_drive = Some(frac);
                     let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
                 }
             }
@@ -8339,7 +8367,10 @@ impl Engine {
                 }
             }
             SetTxDrive(v) => {
+                self.push_tx_freq();
                 self.state.tx.drive = v.clamp(0.0, 1.0);
+                self.band_tx.entry(Band::containing(self.tx_target_hz())).or_default().drive =
+                    Some(self.state.tx.drive);
                 // CAT/TCI rigs command output power directly; IQ sources ignore
                 // this and scale the modulated samples instead. While tuning the
                 // rig is holding the tune level, so leave it alone until unkey.
@@ -8349,7 +8380,10 @@ impl Engine {
                 }
             }
             SetTuneDrive(v) => {
+                self.push_tx_freq();
                 self.state.tx.tune_drive = v.clamp(0.0, 1.0);
+                self.band_tx.entry(Band::containing(self.tx_target_hz())).or_default().tune_drive =
+                    Some(self.state.tx.tune_drive);
                 self.source.set_tune_drive(self.tx_tune_level() as f64);
                 // Tuning right now: the rig's power is the tune level, so the
                 // slider takes effect without unkeying.
@@ -8358,6 +8392,31 @@ impl Engine {
                 }
             }
             SetMicGain(v) => self.state.tx.mic_gain = v.clamp(0.0, 1.0),
+            SetOnboardPa(enabled) => {
+                if self.source.onboard_pa().is_none() {
+                    self.notice("This radio has no onboard PA control");
+                    return;
+                }
+                if self.tx_active || self.state.tx.external_ptt {
+                    self.notice("Release PTT and TUNE before changing the onboard PA");
+                    return;
+                }
+                self.push_tx_freq();
+                match self.source.set_onboard_pa(enabled) {
+                    Ok(()) => {
+                        self.state.tx.onboard_pa = self.source.onboard_pa();
+                        self.band_tx
+                            .entry(Band::containing(self.tx_target_hz()))
+                            .or_default()
+                            .onboard_pa = Some(enabled);
+                    }
+                    Err(e) => {
+                        warn!("setting onboard PA: {e}");
+                        self.notice(&format!("Could not set onboard PA: {e}"));
+                    }
+                }
+                self.emit_state();
+            }
             SetTxEq(eq) => self.state.tx.eq = eq.clamped(),
 
             // ── Voice keyer ─────────────────────────────────────────────────
@@ -14275,6 +14334,7 @@ impl Engine {
             tx_gains: self.want_gains.1.clone(),
             recording_mono: self.state.recording_mono,
             band_antenna: self.band_antenna.clone(),
+            band_tx: self.band_tx.clone(),
             // The shelf again, with the live socket written into the active
             // slot on the way past for the same reason the modes are.
             vfo_antennas: Some({
@@ -14406,6 +14466,19 @@ impl Engine {
         // that offers it and is ignored by one that does not.
         self.want_antenna = (s.antenna_rx.clone(), s.antenna_tx.clone());
         self.band_antenna = s.band_antenna.clone();
+        self.band_tx = s.band_tx.clone();
+        if self.band_tx.is_empty() {
+            self.band_tx.insert(
+                Band::containing(self.tx_target_hz()),
+                sdroxide_config::BandTransmit {
+                    drive: Some(s.drive),
+                    tune_drive: Some(s.tune_drive),
+                    onboard_pa: None,
+                },
+            );
+        }
+        self.tx_band_seen = None;
+        self.push_tx_freq();
         self.restore_antennas();
         self.follow_band_antenna(self.state.band);
         self.want_gains = (s.gains.clone(), s.tx_gains.clone());
@@ -14941,6 +15014,8 @@ impl Engine {
             let _ = self.source.tx_end();
         }
         self.source = source;
+        self.onboard_pa_default = self.source.onboard_pa();
+        self.tx_band_seen = None;
         // The old front end's pipeline went with it.
         self.center_trail.clear();
         self.stream_center_hz = self.source.center_hz();
@@ -15109,6 +15184,7 @@ impl Engine {
             self.audio_resampler = None;
         }
 
+        self.push_tx_freq();
         info!(source = %self.source.describe(), audio_mode = self.audio_mode, "radio source swapped at runtime");
         let _ = self.event_tx.send(RadioEvent::Capabilities(self.caps.clone()));
         let _ = self.event_tx.send(RadioEvent::State(self.state.clone()));
@@ -15293,7 +15369,33 @@ impl Engine {
             // derived here rather than pushed from the dozen places that move
             // the transmit frequency.
             self.refresh_drive_trim(hz);
+            self.follow_band_tx(Band::containing(hz));
+        } else if self.tx_band_seen.is_none() {
+            self.follow_band_tx(Band::containing(hz));
         }
+    }
+
+    fn follow_band_tx(&mut self, band: Band) {
+        if self.tx_band_seen == Some(band) {
+            return;
+        }
+        self.tx_band_seen = Some(band);
+        let saved = self.band_tx.get(&band).copied().unwrap_or_default();
+        let defaults = RadioState::default().tx;
+        self.state.tx.drive = saved.drive.unwrap_or(defaults.drive).clamp(0.0, 1.0);
+        self.state.tx.tune_drive = saved.tune_drive.unwrap_or(defaults.tune_drive).clamp(0.0, 1.0);
+        self.state.tx.onboard_pa = self.source.onboard_pa();
+        if let Some(default) = self.onboard_pa_default {
+            let enabled = saved.onboard_pa.unwrap_or(default);
+            if let Err(e) = self.source.set_onboard_pa(enabled) {
+                warn!("restoring onboard PA for {band:?}: {e}");
+                self.notice(&format!("Could not restore onboard PA for {}: {e}", band.label()));
+            }
+            self.state.tx.onboard_pa = self.source.onboard_pa();
+        }
+        self.source.set_tune_drive(self.tx_tune_level() as f64);
+        self.source.set_tx_drive(self.tx_power_level() as f64);
+        self.emit_state();
     }
 
     // ── Repeater operation ──────────────────────────────────────────────────
@@ -15670,6 +15772,9 @@ impl Engine {
     /// Reconcile the TX hardware state with `ptt || tune`, enforcing the
     /// safety rails on key-down.
     fn sync_tx_state(&mut self) {
+        // Commands may tune and key within one tick; restore before key-down,
+        // not just at the next loop's frequency poll.
+        self.push_tx_freq();
         let want_tx = self.state.tx.ptt || self.state.tx.tune;
         if want_tx == self.tx_active {
             return;

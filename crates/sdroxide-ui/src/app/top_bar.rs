@@ -3776,7 +3776,10 @@ impl SdroxideApp {
     /// only for hardware that has what it drives — a strip is too narrow to
     /// hold controls for a radio that would ignore them.
     fn rig_box_shown(&self) -> bool {
-        !self.rig_antennas().is_empty() || self.rig_rx_antenna().is_some() || self.rig_power()
+        !self.rig_antennas().is_empty()
+            || self.rig_rx_antenna().is_some()
+            || self.rig_power()
+            || self.state.tx.onboard_pa.is_some()
     }
 
     /// The RIG box's natural width: the wider of its two rows.
@@ -3803,8 +3806,8 @@ impl SdroxideApp {
         if top > 0.0 {
             top += crate::chrome::text_width(ui, "ANT", body.clone());
         }
-        let bottom = if self.rig_power() {
-            crate::chrome::text_width(ui, "PWR", body)
+        let mut bottom = if self.rig_power() {
+            crate::chrome::text_width(ui, "PWR", body.clone())
                 + gap
                 + crate::chrome::chip_width(ui, "ON", None)
                 + gap
@@ -3812,6 +3815,11 @@ impl SdroxideApp {
         } else {
             0.0
         };
+        if self.state.tx.onboard_pa.is_some() {
+            bottom += crate::chrome::text_width(ui, "PA", body)
+                + gap
+                + crate::chrome::chip_width(ui, "OFF", None);
+        }
         top.max(bottom) + 2.0 * crate::chrome::MODULE_MARGIN_X
     }
 
@@ -3919,6 +3927,25 @@ impl SdroxideApp {
                 {
                     cmds.push(Command::SetRigPower(false));
                 }
+            });
+        }
+        if let Some(on) = self.state.tx.onboard_pa {
+            crate::chrome::control_row(ui, narrow, |ui| {
+                ui.label("PA");
+                let keyed = self.state.tx.ptt_on() || self.state.tx.tune;
+                ui.add_enabled_ui(!keyed, |ui| {
+                    if crate::chrome::chip(ui, on, if on { "ON" } else { "OFF" })
+                        .on_hover_text(
+                            "Hermes-Lite onboard PA, remembered for the transmit band. \
+                             ON sends power to ANT; OFF uses low-power RF1 and holds the \
+                             T/R relay in receive. Unsaved bands use the Settings default. \
+                             Release PTT and TUNE before changing this.",
+                        )
+                        .clicked()
+                    {
+                        cmds.push(Command::SetOnboardPa(!on));
+                    }
+                });
             });
         }
     }
@@ -4300,7 +4327,8 @@ impl SdroxideApp {
             )
         };
         format!(
-            "How hard the transmitter is driven. On a radio sdroxide modulates itself it \
+            "How hard the transmitter is driven, remembered per transmit band. Unsaved \
+             bands start at 10%. On a radio sdroxide modulates itself it \
              scales the modulated samples; on a rig with its own power control it is the \
              fraction of rated power the rig is asked for.\n\n{trim}\n\nSettings → Radio → \
              Transmit drive by band."
@@ -4329,7 +4357,9 @@ impl SdroxideApp {
     /// The tune-carrier level: label + rail + readout.
     fn tx_tune_level(&mut self, ui: &mut egui::Ui, cmds: &mut Vec<Command>) {
         let mut tune_drive = self.state.tx.tune_drive;
-        ui.label("Tune");
+        ui.label("Tune").on_hover_text(
+            "Tune-carrier drive, remembered per transmit band. Unsaved bands start at 5%.",
+        );
         if crate::chrome::slider_readout(
             ui,
             value_field_w(ui, "100%"),

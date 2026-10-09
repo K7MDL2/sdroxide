@@ -186,6 +186,9 @@ pub struct TxState {
     /// Observed local radio PTT; status only, never a request to key.
     #[serde(default)]
     pub external_ptt: bool,
+    /// Commanded onboard PA state, or `None` when the source has no switch.
+    #[serde(default)]
+    pub onboard_pa: Option<bool>,
 }
 
 impl TxState {

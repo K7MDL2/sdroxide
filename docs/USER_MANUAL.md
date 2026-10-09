@@ -1355,13 +1355,19 @@ On a TX-capable rig the **Transmit** module appears:
 
 - **PTT** — key the transmitter.
 - **TUNE** — send a carrier at the tune-drive level for tuning an ATU.
-- **Drive** — transmit drive (0–100%). One number for every band; if your
-  amplifier makes a different power on each, calibrate it once in **Transmit
-  drive by band** (Settings → Radio,
-  [6.2](#62-radio-choosing-and-configuring-the-rig)) rather than resetting this
-  on every band change.
-- **Tune** — the (lower) drive level used by TUNE.
+- **Drive** — transmit drive (0–100%), remembered per **transmit band**.
+  A band without a saved setting starts at **10%**. The separate **Transmit
+  drive by band** calibration (Settings → Radio,
+  [6.2](#62-radio-choosing-and-configuring-the-rig)) still applies to the
+  selected level, as do the radio and transverter drive ceilings.
+- **Tune** — the drive level used by TUNE, also remembered per transmit band.
+  A band without a saved setting starts at **5%**.
 - **Mic** — microphone gain.
+- **PA** in the **RIG** module — on a Hermes-Lite Protocol 1 transmitter,
+  enable the onboard PA (**ON**, transmit on ANT) or disable it (**OFF**,
+  low-power RF1 with the T/R relay held in receive). This choice is remembered
+  per transmit band; bands without an override use the HPSDR Settings default.
+  Release PTT and TUNE before changing PA.
 - **TX audio** — how loud a digital mode is handed to a radio that modulates it
   itself, in dB below full scale. It stands **in the Mic rail's place**, and
   only in the modes where the microphone is not what goes on the air: select
@@ -1394,6 +1400,12 @@ On a TX-capable rig the **Transmit** module appears:
   On a radio sdroxide modulates itself — a Pluto, an HPSDR board, an SDR — none
   of this applies and the rail does not appear: there the modulator and Drive
   own the level.
+
+Drive, Tune and PA follow the **transmit** frequency, including split, XIT and
+satellite uplinks, not the receiver's band or the transverter's IF. They are
+restored at startup, on Apply/reconnect, and when the transmit band changes.
+An older session's last-used drive and tune levels are retained on its starting
+band when first upgrading; other unsaved bands use the defaults above.
 
 **Transmit EQ** (Settings → Radio, above the per-interface section, since it
 applies the same way whichever radio interface is selected) is a 3-band
@@ -7229,9 +7241,11 @@ on the air, not the intermediate frequency the radio is sitting on, on both
 protocols.
 
 Two things the table does not do, on purpose. It does not switch the radio's own
-PA off or hold its T/R relay in receive — on a Hermes-Lite that is the **PA
-enable** switch on the HPSDR page ([6.2.3](#623-hpsdr-network-radios)),
-which turns the onboard amplifier off and leaves transmit at the low-power RF1
+PA off or hold its T/R relay in receive — on a Hermes-Lite use the main
+**RIG → PA** control to remember that choice per transmit band. The **PA
+enable** switch on the HPSDR page ([6.2.3](#623-hpsdr-network-radios))
+is the default for bands without an override. Disabling PA
+turns the onboard amplifier off and leaves transmit at the low-power RF1
 output, which is how an external amplifier or a transverter is driven. And it
 does not choose the receive port: that is remembered **per band** already, so
 selecting the transverter's antenna once on the band leaves it there
@@ -8631,11 +8645,13 @@ going out.
   you have wired the IO board's own SMA jacks: J9 can replace the radio's receive
   input, and J10 is a PureSignal (transmit sample) input. Selecting **IO board
   J9** with nothing connected to it leaves the receiver deaf. Takes effect on
-  *Apply / reconnect*. Once it is set to one of the J9 choices, the three inputs
-  also appear on the receiver's **ANT** control and are remembered **per band**
+  *Apply / reconnect*. Once the IO board is detected, the three inputs
+  appear on the receiver's **ANT** control and are remembered **per band**
   like any other receiving antenna — so a transverter band can listen on J9
-  while HF stays on the radio's own jack. Left at *Radio's own input*, no ANT
-  control is shown, because an HL2 that has never used J9 has nothing there.
+  while HF stays on the radio's own jack. The control also appears when
+  *Radio's own input* is selected; opening Settings is not required. No IO
+  input control is shown without a detected board. The Hermes-Lite **PA**
+  control is independent of IO board detection.
   A remembered ANT choice is reapplied to the relay at startup, on
   *Apply / reconnect*, and on band recall, even if the displayed choice has
   not changed. With a transverter selected, the IO board receives the on-air
