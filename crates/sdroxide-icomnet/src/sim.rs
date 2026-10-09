@@ -102,7 +102,7 @@ impl Default for SimOptions {
 
 #[derive(Debug, Default)]
 struct Recorded {
-    data_mode: u8,
+    mode: u8,
     /// PCM the client transmitted, decoded to mono.
     tx_audio: Vec<f32>,
     /// CI-V frames the client sent.
@@ -706,9 +706,9 @@ impl SimRadio {
             0x1a if frame.get(5) == Some(&0x06) && frame.len() >= 7 => {
                 let mut recorded = self.recorded.lock().unwrap_or_else(|e| e.into_inner());
                 if frame.len() == 7 {
-                    Some(reply(vec![0x1a, 0x06, recorded.data_mode, 0x01]))
+                    Some(reply(vec![0x1a, 0x06, recorded.mode, 0x01]))
                 } else {
-                    recorded.data_mode = frame[6];
+                    recorded.mode = frame[6];
                     Some(vec![0xfe, 0xfe, 0xe0, addr, 0xfb, 0xfd])
                 }
             }
